@@ -1,9 +1,10 @@
 (self: super: {
   grub2 = super.grub2.overrideAttrs (oldAttrs: {
     patches = oldAttrs.patches ++ [
-      ./screen_rotation_patch_1-3.patch
-      ./screen_rotation_patch_2-3.patch
-      ./screen_rotation_patch_3-3.patch
+	./0001.patch
+	./0002.patch
+	./0003.patch
+	./0004.patch 
     ];
   });
 })

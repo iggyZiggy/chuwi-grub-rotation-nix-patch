@@ -1,0 +1,78 @@
+From 89dd87f0a30cc07eb195b8352b209470479f2f25 Mon Sep 17 00:00:00 2001
+From: Kyle Bader <kyle.bader94@gmail.com>
+Date: Sat, 14 Jun 2025 13:50:07 -0600
+Subject: [PATCH 4/4] /util/grub-mkconfig - Pass rotation to linux kernel if
+ GFXPAYLOAD=keep
+
+---
+ grub-core/video/fb/video_fb.c | 14 --------------
+ util/grub.d/10_linux.in       | 21 +++++++++++++++++++++
+ 2 files changed, 21 insertions(+), 14 deletions(-)
+
+diff --git a/grub-core/video/fb/video_fb.c b/grub-core/video/fb/video_fb.c
+index 907c2cfb6..21a85ae1c 100644
+--- a/grub-core/video/fb/video_fb.c
++++ b/grub-core/video/fb/video_fb.c
+@@ -26,7 +26,6 @@
+ #include <grub/bitmap.h>
+ #include <grub/dl.h>
+ #include <grub/safemath.h>
+-#include <grub/env.h>
+ 
+ GRUB_MOD_LICENSE ("GPLv3+");
+ 
+@@ -1362,19 +1361,6 @@ grub_video_fb_create_render_target_from_pointer (struct grub_video_fbrender_targ
+   target->data = ptr;
+ 
+   grub_memcpy (&(target->mode_info), mode_info, sizeof (target->mode_info));
+-  rot_env = grub_env_get("rotation");
+-
+-  if (!rot_env) {
+-        target->mode_info.rotation = GRUB_VIDEO_ROTATE_NONE;
+-    } else if (grub_strcmp(rot_env, "90") == 0) {
+-        target->mode_info.rotation = GRUB_VIDEO_ROTATE_90;
+-    } else if (grub_strcmp(rot_env, "180") == 0) {
+-        target->mode_info.rotation = GRUB_VIDEO_ROTATE_180;
+-    } else if (grub_strcmp(rot_env, "270") == 0) {
+-        target->mode_info.rotation = GRUB_VIDEO_ROTATE_270;
+-    } else {
+-        target->mode_info.rotation = GRUB_VIDEO_ROTATE_NONE;
+-    }
+ 
+   target->mode_info.original_width = mode_info->width;
+   target->mode_info.original_height = mode_info->height;
+diff --git a/util/grub.d/10_linux.in b/util/grub.d/10_linux.in
+index cc393be7e..3f5709ce6 100644
+--- a/util/grub.d/10_linux.in
++++ b/util/grub.d/10_linux.in
+@@ -112,6 +112,27 @@ linux_entry ()
+       save_default_entry | grub_add_tab
+   fi
+ 
++  # Pass rotation to linux kernel
++  # If the user has set GRUB_GFXPAYLOAD_LINUX=keep and GRUB_GFXMODE is set
++  rotation_val=0
++  if [ "x$GRUB_GFXPAYLOAD_LINUX" = "xkeep" ] && [ "x$GRUB_GFXMODE" != x ]; then
++    case "$GRUB_GFXMODE" in
++      *-left|*-90)
++        rotation_val=3
++        ;;
++      *-inverted|*-180)
++        rotation_val=2
++        ;;
++      *-right|*-270)
++        rotation_val=1
++        ;;
++    esac
++
++    if [ "x$rotation_val" != x ]; then
++      args="$args fbcon=rotate:$rotation_val"
++    fi
++  fi
++
+   # Use ELILO's generic "efifb" when it's known to be available.
+   # FIXME: We need an interface to select vesafb in case efifb can't be used.
+   if [ "x$GRUB_GFXPAYLOAD_LINUX" = x ]; then
+-- 
+2.43.0
+
