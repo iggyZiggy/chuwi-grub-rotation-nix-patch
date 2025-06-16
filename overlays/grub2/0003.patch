@@ -1,0 +1,542 @@
+From c7d4d1fe3debbd979f0c6dbc04a9328f6f8aae47 Mon Sep 17 00:00:00 2001
+From: Kyle Bader <kyle.bader94@gmail.com>
+Date: Fri, 13 Jun 2025 21:22:29 -0600
+Subject: [PATCH 3/4] /video/video.c: Update video mode to support rotation
+
+      - Add logic to mode parse function to parse rotation.
+      - The expected GRUB_GFXMODE config format is now:
+	 <width>x<height>[x<depth>][-<rotation>]
+      - Add rotation to video adapter setup function declaration
+      - Modify existing video adapters to use rotation during setup
+---
+ grub-core/video/bochs.c             |  2 +
+ grub-core/video/capture.c           |  3 +-
+ grub-core/video/cirrus.c            |  2 +
+ grub-core/video/coreboot/cbfb.c     |  5 ++
+ grub-core/video/efi_gop.c           |  3 ++
+ grub-core/video/efi_uga.c           |  2 +
+ grub-core/video/emu/sdl.c           |  5 +-
+ grub-core/video/i386/pc/vbe.c       |  5 +-
+ grub-core/video/i386/pc/vga.c       |  4 +-
+ grub-core/video/ieee1275.c          |  3 ++
+ grub-core/video/radeon_fuloong2e.c  |  5 +-
+ grub-core/video/radeon_yeeloong3a.c |  5 +-
+ grub-core/video/sis315pro.c         |  2 +
+ grub-core/video/sm712.c             |  5 +-
+ grub-core/video/video.c             | 82 +++++++++++++++++++++++------
+ include/grub/video.h                |  9 ++--
+ 16 files changed, 115 insertions(+), 27 deletions(-)
+
+diff --git a/grub-core/video/bochs.c b/grub-core/video/bochs.c
+index edc651697..51bc81159 100644
+--- a/grub-core/video/bochs.c
++++ b/grub-core/video/bochs.c
+@@ -229,6 +229,7 @@ find_card (grub_pci_device_t dev, grub_pci_id_t pciid, void *data)
+ 
+ static grub_err_t
+ grub_video_bochs_setup (unsigned int width, unsigned int height,
++      grub_video_rotation_t rotation,
+ 			grub_video_mode_type_t mode_type,
+ 			grub_video_mode_type_t mode_mask)
+ {
+@@ -323,6 +324,7 @@ grub_video_bochs_setup (unsigned int width, unsigned int height,
+   /* Fill mode info details.  */
+   framebuffer.mode_info.width = width;
+   framebuffer.mode_info.height = height;
++  framebuffer.mode_info.rotation = rotation;
+   framebuffer.mode_info.mode_type = GRUB_VIDEO_MODE_TYPE_RGB;
+   framebuffer.mode_info.bpp = depth;
+   framebuffer.mode_info.bytes_per_pixel = bytes_per_pixel;
+diff --git a/grub-core/video/capture.c b/grub-core/video/capture.c
+index c653d89f9..f41718abd 100644
+--- a/grub-core/video/capture.c
++++ b/grub-core/video/capture.c
+@@ -135,6 +135,7 @@ grub_video_capture_end (void)
+       if (saved->init)
+ 	saved->init ();
+       if (saved->setup)
+-	saved->setup (saved_mode_info.width, saved_mode_info.height, 0, 0);
++	saved->setup (saved_mode_info.width, saved_mode_info.height, 
++                GRUB_VIDEO_ROTATE_NONE, 0, 0);
+     }
+ }
+diff --git a/grub-core/video/cirrus.c b/grub-core/video/cirrus.c
+index f5542ccdc..e460a7e3f 100644
+--- a/grub-core/video/cirrus.c
++++ b/grub-core/video/cirrus.c
+@@ -267,6 +267,7 @@ find_card (grub_pci_device_t dev, grub_pci_id_t pciid, void *data)
+ 
+ static grub_err_t
+ grub_video_cirrus_setup (unsigned int width, unsigned int height,
++       grub_video_rotation_t rotation,
+ 			 grub_video_mode_type_t mode_type,
+ 			 grub_video_mode_type_t mode_mask)
+ {
+@@ -405,6 +406,7 @@ grub_video_cirrus_setup (unsigned int width, unsigned int height,
+   /* Fill mode info details.  */
+   framebuffer.mode_info.width = width;
+   framebuffer.mode_info.height = height;
++  framebuffer.mode_info.rotation = rotation;
+   framebuffer.mode_info.mode_type = GRUB_VIDEO_MODE_TYPE_RGB;
+   framebuffer.mode_info.bpp = depth;
+   framebuffer.mode_info.bytes_per_pixel = bytes_per_pixel;
+diff --git a/grub-core/video/coreboot/cbfb.c b/grub-core/video/coreboot/cbfb.c
+index 986003c51..5e5affe3b 100644
+--- a/grub-core/video/coreboot/cbfb.c
++++ b/grub-core/video/coreboot/cbfb.c
+@@ -51,6 +51,7 @@ grub_video_cbfb_fill_mode_info (struct grub_video_mode_info *out)
+ 
+   out->width = grub_video_coreboot_fbtable->width;
+   out->height = grub_video_coreboot_fbtable->height;
++  out->rotation = grub_video_coreboot_fbtable->rotation;
+   out->pitch = grub_video_coreboot_fbtable->pitch;
+ 
+   out->red_field_pos = grub_video_coreboot_fbtable->red_field_pos;
+@@ -73,6 +74,7 @@ grub_video_cbfb_fill_mode_info (struct grub_video_mode_info *out)
+ 
+ static grub_err_t
+ grub_video_cbfb_setup (unsigned int width, unsigned int height,
++         grub_video_rotation_t rotation,
+ 			   unsigned int mode_type __attribute__ ((unused)),
+ 			   unsigned int mode_mask __attribute__ ((unused)))
+ {
+@@ -92,6 +94,9 @@ grub_video_cbfb_setup (unsigned int width, unsigned int height,
+       return err;
+     }
+ 
++  /* Rotation isn't passed from coreboot so set it here */
++  framebuffer.mode_info.rotation = rotation;
++
+   framebuffer.ptr = (void *) (grub_addr_t) grub_video_coreboot_fbtable->lfb;
+ 
+   grub_dprintf ("video", "CBFB: initialising FB @ %p %dx%dx%d\n",
+diff --git a/grub-core/video/efi_gop.c b/grub-core/video/efi_gop.c
+index 9452f5e58..3c586c9d0 100644
+--- a/grub-core/video/efi_gop.c
++++ b/grub-core/video/efi_gop.c
+@@ -349,6 +349,7 @@ grub_gop_get_preferred_mode (unsigned int *width, unsigned int *height)
+ 
+ static grub_err_t
+ grub_video_gop_setup (unsigned int width, unsigned int height,
++          grub_video_rotation_t rotation,
+ 		      unsigned int mode_type,
+ 		      unsigned int mode_mask __attribute__ ((unused)))
+ {
+@@ -469,6 +470,8 @@ grub_video_gop_setup (unsigned int width, unsigned int height,
+   grub_video_gop_fill_mode_info (gop->mode->mode, info,
+ 				 &framebuffer.mode_info);
+ 
++  framebuffer.mode_info.rotation = rotation;
++
+   framebuffer.ptr = (void *) (grub_addr_t) gop->mode->fb_base;
+   framebuffer.offscreen
+     = grub_malloc (framebuffer.mode_info.height
+diff --git a/grub-core/video/efi_uga.c b/grub-core/video/efi_uga.c
+index d53079e0b..4d1552cfa 100644
+--- a/grub-core/video/efi_uga.c
++++ b/grub-core/video/efi_uga.c
+@@ -221,6 +221,7 @@ grub_video_uga_fini (void)
+ 
+ static grub_err_t
+ grub_video_uga_setup (unsigned int width, unsigned int height,
++          grub_video_rotation_t rotation,
+ 		      unsigned int mode_type,
+ 		      unsigned int mode_mask __attribute__ ((unused)))
+ {
+@@ -243,6 +244,7 @@ grub_video_uga_setup (unsigned int width, unsigned int height,
+       {
+ 	framebuffer.mode_info.width = w;
+ 	framebuffer.mode_info.height = h;
++  framebuffer.mode_info.rotation = rotation;
+ 	framebuffer.mode_info.pitch = uga_pitch;
+ 	framebuffer.ptr = (grub_uint8_t *) (grub_addr_t) uga_fb;
+ 
+diff --git a/grub-core/video/emu/sdl.c b/grub-core/video/emu/sdl.c
+index cb8490e35..3acb3392f 100644
+--- a/grub-core/video/emu/sdl.c
++++ b/grub-core/video/emu/sdl.c
+@@ -86,7 +86,9 @@ get_mask_size (grub_uint32_t mask)
+ 
+ static grub_err_t
+ grub_video_sdl_setup (unsigned int width, unsigned int height,
+-                      unsigned int mode_type, unsigned int mode_mask __attribute__ ((unused)))
++                      grub_video_rotation_t rotation,
++                      unsigned int mode_type, 
++                      unsigned int mode_mask __attribute__ ((unused)))
+ {
+   int depth;
+   int flags = 0;
+@@ -152,6 +154,7 @@ grub_video_sdl_setup (unsigned int width, unsigned int height,
+   mode_info.mode_type = 0;
+   mode_info.width = surface->w;
+   mode_info.height = surface->h;
++  mode_info.rotation = rotation;
+ #ifndef HAVE_SDL2
+   if (surface->flags & SDL_DOUBLEBUF)
+     mode_info.mode_type
+diff --git a/grub-core/video/i386/pc/vbe.c b/grub-core/video/i386/pc/vbe.c
+index a0bb9af09..3712cc57b 100644
+--- a/grub-core/video/i386/pc/vbe.c
++++ b/grub-core/video/i386/pc/vbe.c
+@@ -976,8 +976,9 @@ grub_video_vbe_iterate (int (*hook) (const struct grub_video_mode_info *info, vo
+ 
+ static grub_err_t
+ grub_video_vbe_setup (unsigned int width, unsigned int height,
++                      grub_video_rotation_t rotation,
+                       grub_video_mode_type_t mode_type,
+-		      grub_video_mode_type_t mode_mask)
++		                  grub_video_mode_type_t mode_mask)
+ {
+   grub_uint16_t *p;
+   struct grub_vbe_mode_info_block vbe_mode_info;
+@@ -1116,6 +1117,8 @@ grub_video_vbe_setup (unsigned int width, unsigned int height,
+ 		     &framebuffer.mode_info);
+ 
+       {
++      framebuffer.mode_info.rotation = rotation;
++
+ 	/* Get video RAM size in bytes.  */
+ 	grub_size_t vram_size = controller_info.total_memory << 16;
+ 	grub_size_t page_size;        /* The size of a page in bytes.  */
+diff --git a/grub-core/video/i386/pc/vga.c b/grub-core/video/i386/pc/vga.c
+index 50d0b5e02..64abd1620 100644
+--- a/grub-core/video/i386/pc/vga.c
++++ b/grub-core/video/i386/pc/vga.c
+@@ -117,8 +117,9 @@ grub_video_vga_init (void)
+ 
+ static grub_err_t
+ grub_video_vga_setup (unsigned int width, unsigned int height,
++                      grub_video_rotation_t rotation,
+                       grub_video_mode_type_t mode_type,
+-		      grub_video_mode_type_t mode_mask)
++		                  grub_video_mode_type_t mode_mask)
+ {
+   grub_err_t err;
+ 
+@@ -142,6 +143,7 @@ grub_video_vga_setup (unsigned int width, unsigned int height,
+ 
+   framebuffer.mode_info.width = VGA_WIDTH;
+   framebuffer.mode_info.height = vga_height;
++  framebuffer.mode_info.rotation = rotation;
+ 
+   framebuffer.mode_info.mode_type = GRUB_VIDEO_MODE_TYPE_INDEX_COLOR;
+ 
+diff --git a/grub-core/video/ieee1275.c b/grub-core/video/ieee1275.c
+index ca3d3c3b2..533452cbc 100644
+--- a/grub-core/video/ieee1275.c
++++ b/grub-core/video/ieee1275.c
+@@ -200,6 +200,7 @@ grub_video_ieee1275_fill_mode_info (grub_ieee1275_phandle_t dev,
+ 
+ static grub_err_t
+ grub_video_ieee1275_setup (unsigned int width, unsigned int height,
++         grub_video_rotation_t rotation,
+ 			   unsigned int mode_type __attribute__ ((unused)),
+ 			   unsigned int mode_mask __attribute__ ((unused)))
+ {
+@@ -241,6 +242,8 @@ grub_video_ieee1275_setup (unsigned int width, unsigned int height,
+       return err;
+     }
+ 
++  framebuffer.mode_info.rotation = rotation;
++
+   if (grub_ieee1275_get_integer_property (dev, "address", (void *) &address,
+ 					  sizeof (address), 0))
+     return grub_error (GRUB_ERR_IO, "Couldn't retrieve display address.");
+diff --git a/grub-core/video/radeon_fuloong2e.c b/grub-core/video/radeon_fuloong2e.c
+index f1b4c591b..748281d51 100644
+--- a/grub-core/video/radeon_fuloong2e.c
++++ b/grub-core/video/radeon_fuloong2e.c
+@@ -88,7 +88,9 @@ find_card (grub_pci_device_t dev, grub_pci_id_t pciid, void *data)
+ 
+ static grub_err_t
+ grub_video_radeon_fuloong2e_setup (unsigned int width, unsigned int height,
+-			unsigned int mode_type, unsigned int mode_mask __attribute__ ((unused)))
++                                   grub_video_rotation_t rotation,
++			                             unsigned int mode_type, 
++                                unsigned int mode_mask __attribute__ ((unused)))
+ {
+   int depth;
+   grub_err_t err;
+@@ -111,6 +113,7 @@ grub_video_radeon_fuloong2e_setup (unsigned int width, unsigned int height,
+   /* Fill mode info details.  */
+   framebuffer.mode_info.width = 640;
+   framebuffer.mode_info.height = 480;
++  framebuffer.mode_info.rotation = rotation;
+   framebuffer.mode_info.mode_type = GRUB_VIDEO_MODE_TYPE_RGB;
+   framebuffer.mode_info.bpp = 16;
+   framebuffer.mode_info.bytes_per_pixel = 2;
+diff --git a/grub-core/video/radeon_yeeloong3a.c b/grub-core/video/radeon_yeeloong3a.c
+index 61b70ef26..b5a140ca1 100644
+--- a/grub-core/video/radeon_yeeloong3a.c
++++ b/grub-core/video/radeon_yeeloong3a.c
+@@ -87,7 +87,9 @@ find_card (grub_pci_device_t dev, grub_pci_id_t pciid, void *data)
+ 
+ static grub_err_t
+ grub_video_radeon_yeeloong3a_setup (unsigned int width, unsigned int height,
+-			unsigned int mode_type, unsigned int mode_mask __attribute__ ((unused)))
++                                    grub_video_rotation_t rotation,
++			                              unsigned int mode_type, 
++                                unsigned int mode_mask __attribute__ ((unused)))
+ {
+   int depth;
+   grub_err_t err;
+@@ -110,6 +112,7 @@ grub_video_radeon_yeeloong3a_setup (unsigned int width, unsigned int height,
+   /* Fill mode info details.  */
+   framebuffer.mode_info.width = 800;
+   framebuffer.mode_info.height = 600;
++  framebuffer.mode_info.rotation = rotation;
+   framebuffer.mode_info.mode_type = GRUB_VIDEO_MODE_TYPE_RGB;
+   framebuffer.mode_info.bpp = 16;
+   framebuffer.mode_info.bytes_per_pixel = 2;
+diff --git a/grub-core/video/sis315pro.c b/grub-core/video/sis315pro.c
+index ad3bb4dc7..fad075b43 100644
+--- a/grub-core/video/sis315pro.c
++++ b/grub-core/video/sis315pro.c
+@@ -121,6 +121,7 @@ find_card (grub_pci_device_t dev, grub_pci_id_t pciid, void *data)
+ 
+ static grub_err_t
+ grub_video_sis315pro_setup (unsigned int width, unsigned int height,
++          grub_video_rotation_t rotation,
+ 			    unsigned int mode_type,
+ 			    unsigned int mode_mask __attribute__ ((unused)))
+ {
+@@ -146,6 +147,7 @@ grub_video_sis315pro_setup (unsigned int width, unsigned int height,
+   /* Fill mode info details.  */
+   framebuffer.mode_info.width = 640;
+   framebuffer.mode_info.height = 480;
++  framebuffer.mode_info.rotation = rotation;
+   framebuffer.mode_info.mode_type = (GRUB_VIDEO_MODE_TYPE_INDEX_COLOR
+ 				     | GRUB_VIDEO_MODE_TYPE_DOUBLE_BUFFERED
+ 				     | GRUB_VIDEO_MODE_TYPE_UPDATING_SWAP);
+diff --git a/grub-core/video/sm712.c b/grub-core/video/sm712.c
+index e8967308d..bc1458939 100644
+--- a/grub-core/video/sm712.c
++++ b/grub-core/video/sm712.c
+@@ -388,7 +388,9 @@ find_card (grub_pci_device_t dev, grub_pci_id_t pciid, void *data)
+ 
+ static grub_err_t
+ grub_video_sm712_setup (unsigned int width, unsigned int height,
+-			unsigned int mode_type, unsigned int mode_mask __attribute__ ((unused)))
++                        grub_video_rotation_t rotation,
++			                  unsigned int mode_type, 
++                        unsigned int mode_mask __attribute__ ((unused)))
+ {
+   unsigned i;
+ #if !defined (TEST) && !defined(GENINIT)
+@@ -411,6 +413,7 @@ grub_video_sm712_setup (unsigned int width, unsigned int height,
+   /* Fill mode info details.  */
+   framebuffer.mode_info.width = 1024;
+   framebuffer.mode_info.height = 600;
++  framebuffer.mode_info.rotation = rotation;
+   framebuffer.mode_info.mode_type = (GRUB_VIDEO_MODE_TYPE_RGB
+ 				     | GRUB_VIDEO_MODE_TYPE_DOUBLE_BUFFERED
+ 				     | GRUB_VIDEO_MODE_TYPE_UPDATING_SWAP);
+diff --git a/grub-core/video/video.c b/grub-core/video/video.c
+index 8937da745..b561c702c 100644
+--- a/grub-core/video/video.c
++++ b/grub-core/video/video.c
+@@ -467,18 +467,47 @@ grub_video_edid_preferred_mode (struct grub_video_edid_info *edid_info,
+   return grub_error (GRUB_ERR_BAD_DEVICE, "no preferred mode available");
+ }
+ 
+-/* Parse <width>x<height>[x<depth>]*/
++/* Parse <width>x<height>[x<depth>][-<rotation>]*/
+ static grub_err_t
+-parse_modespec (const char *current_mode, int *width, int *height, int *depth)
++parse_modespec (char *modestr, int *width, int *height, int *depth,
++                grub_video_rotation_t *rotation)
+ {
++  char *current_mode = grub_strdup(modestr);
+   const char *value;
+   const char *param = current_mode;
+ 
+   *width = *height = *depth = -1;
++  *rotation = GRUB_VIDEO_ROTATE_NONE;
++
++  if (!current_mode)
++    return grub_errno;
++
++  /* Check for rotation suffix */
++  char *rotstr = grub_strrchr(current_mode, '-');
++  if (rotstr)
++    {
++      if (grub_strcmp(rotstr + 1, "left") == 0 || grub_strcmp(rotstr + 1, "270") == 0)
++        *rotation = GRUB_VIDEO_ROTATE_270;
++      else if (grub_strcmp(rotstr + 1, "right") == 0 || grub_strcmp(rotstr + 1, "90") == 0)
++        *rotation = GRUB_VIDEO_ROTATE_90;
++      else if (grub_strcmp(rotstr + 1, "inverted") == 0 || grub_strcmp(rotstr + 1, "180") == 0)
++        *rotation = GRUB_VIDEO_ROTATE_180;
++      else if (grub_strcmp(rotstr + 1, "normal") == 0 || grub_strcmp(rotstr + 1, "0") == 0)
++        *rotation = GRUB_VIDEO_ROTATE_NONE;
++      else
++        {
++          grub_free(current_mode);
++          return grub_error(GRUB_ERR_BAD_ARGUMENT,
++                            N_("unknown rotation mode: %s"), rotstr + 1);
++        }
++
++      *rotstr = '\0';
++    } 
+ 
+   if (grub_strcmp (param, "auto") == 0)
+     {
+       *width = *height = 0;
++      grub_free(current_mode);
+       return GRUB_ERR_NONE;
+     }
+ 
+@@ -486,17 +515,23 @@ parse_modespec (const char *current_mode, int *width, int *height, int *depth)
+   value = param;
+   param = grub_strchr(param, 'x');
+   if (param == NULL)
+-    return grub_error (GRUB_ERR_BAD_ARGUMENT,
+-		       N_("invalid video mode specification `%s'"),
+-		       current_mode);
++    {
++      grub_free(current_mode);
++      return grub_error (GRUB_ERR_BAD_ARGUMENT,
++		         N_("invalid video mode specification `%s'"),
++		         current_mode);
++    }
+ 
+   param++;
+ 
+   *width = grub_strtoul (value, 0, 0);
+   if (grub_errno != GRUB_ERR_NONE)
++    {
++      grub_free(current_mode);
+       return grub_error (GRUB_ERR_BAD_ARGUMENT,
+ 			 N_("invalid video mode specification `%s'"),
+ 			 current_mode);
++    }
+ 
+   /* Find height value.  */
+   value = param;
+@@ -505,9 +540,12 @@ parse_modespec (const char *current_mode, int *width, int *height, int *depth)
+     {
+       *height = grub_strtoul (value, 0, 0);
+       if (grub_errno != GRUB_ERR_NONE)
+-	return grub_error (GRUB_ERR_BAD_ARGUMENT,
+-			   N_("invalid video mode specification `%s'"),
+-			   current_mode);
++        {
++	         grub_free(current_mode);
++	         return grub_error (GRUB_ERR_BAD_ARGUMENT,
++			     N_("invalid video mode specification `%s'"),
++			     current_mode);
++        }
+     }
+   else
+     {
+@@ -516,18 +554,25 @@ parse_modespec (const char *current_mode, int *width, int *height, int *depth)
+ 
+       *height = grub_strtoul (value, 0, 0);
+       if (grub_errno != GRUB_ERR_NONE)
+-	return grub_error (GRUB_ERR_BAD_ARGUMENT,
+-			   N_("invalid video mode specification `%s'"),
+-			   current_mode);
++        {
++	         grub_free(current_mode);
++	         return grub_error (GRUB_ERR_BAD_ARGUMENT,
++			     N_("invalid video mode specification `%s'"),
++			     current_mode);
++        }
+ 
+       /* Convert color depth value.  */
+       value = param;
+       *depth = grub_strtoul (value, 0, 0);
+       if (grub_errno != GRUB_ERR_NONE)
+-	return grub_error (GRUB_ERR_BAD_ARGUMENT,
+-			   N_("invalid video mode specification `%s'"),
+-			   current_mode);
++        {
++	         grub_free(current_mode);
++	         return grub_error (GRUB_ERR_BAD_ARGUMENT,
++			     N_("invalid video mode specification `%s'"),
++			     current_mode);
++        }
+     }
++  grub_free(current_mode);
+   return GRUB_ERR_NONE;
+ }
+ 
+@@ -618,6 +663,7 @@ grub_video_set_mode (const char *modestring,
+       int width = -1;
+       int height = -1;
+       int depth = -1;
++      grub_video_rotation_t rotation = GRUB_VIDEO_ROTATE_NONE;
+       grub_err_t err;
+       unsigned int flags = modevalue;
+       unsigned int flagmask = modemask;
+@@ -667,7 +713,8 @@ grub_video_set_mode (const char *modestring,
+ 	    continue;
+ 	}
+ 
+-      err = parse_modespec (current_mode, &width, &height, &depth);
++      err = parse_modespec (current_mode, &width, &height, &depth, 
++                            &rotation);
+       if (err)
+ 	{
+ 	  /* Free memory before returning.  */
+@@ -712,7 +759,7 @@ grub_video_set_mode (const char *modestring,
+ 	    }
+ 
+ 	  /* Try to initialize video mode.  */
+-	  err = p->setup (width, height, flags, flagmask);
++	  err = p->setup (width, height, rotation, flags, flagmask);
+ 	  if (err != GRUB_ERR_NONE)
+ 	    {
+ 	      p->fini ();
+@@ -743,6 +790,9 @@ grub_video_set_mode (const char *modestring,
+ 	      continue;
+ 	    }
+ 
++    /* Apply rotation if specified */
++    mode_info.rotation = rotation;
++
+ 	  /* Valid mode found from adapter, and it has been activated.
+ 	     Specify it as active adapter.  */
+ 	  grub_video_adapter_active = p;
+diff --git a/include/grub/video.h b/include/grub/video.h
+index f05e70b26..04066b657 100644
+--- a/include/grub/video.h
++++ b/include/grub/video.h
+@@ -75,13 +75,13 @@ typedef enum grub_video_mode_type
+     GRUB_VIDEO_MODE_TYPE_INFO_MASK        = 0x00FF0000,
+   } grub_video_mode_type_t;
+ 
+-enum grub_video_rotation
++  typedef enum grub_video_rotation_type
+   {
+     GRUB_VIDEO_ROTATE_NONE,
+     GRUB_VIDEO_ROTATE_90,
+     GRUB_VIDEO_ROTATE_180,
+     GRUB_VIDEO_ROTATE_270
+-  };
++  } grub_video_rotation_t; 
+ 
+ /* The basic render target representing the whole display.  This always
+    renders to the back buffer when double-buffering is in use.  */
+@@ -142,7 +142,7 @@ struct grub_video_mode_info
+   /* Height of the screen, after the rotation.  */
+   unsigned int height;
+ 
+-  enum grub_video_rotation rotation;
++  grub_video_rotation_t rotation;
+ 
+   /* Mode type bitmask.  Contains information like is it Index color or
+      RGB mode.  */
+@@ -344,8 +344,9 @@ struct grub_video_adapter
+   grub_err_t (*fini) (void);
+ 
+   grub_err_t (*setup) (unsigned int width,  unsigned int height,
++                       grub_video_rotation_t rotation,
+                        grub_video_mode_type_t mode_type,
+-		       grub_video_mode_type_t mode_mask);
++		                   grub_video_mode_type_t mode_mask);
+ 
+   grub_err_t (*get_info) (struct grub_video_mode_info *mode_info);
+ 
+-- 
+2.43.0
+

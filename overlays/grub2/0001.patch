@@ -1,3 +1,31 @@
+From 2c423dc40acea503dc868584132250aa6ccb2c30 Mon Sep 17 00:00:00 2001
+From: kbader94 <kyle.bader94@gmail.com>
+Date: Tue, 28 May 2024 17:40:35 -0600
+Subject: [PATCH 1/4] video/fb/video_fb: Support 2D dirty regions for partial
+ screen updates
+
+    GRUB previously tracked only vertical (Y-span) dirty regions,
+    causing entire pixel rows to be refreshed when even a small region
+    changed.
+
+    This patch introduces 2D rectangle-based tracking for screen updates,
+    allowing minimal partial updates and simplifying future work applying
+    rotation transformations to framebuffer drawing operations.
+
+    - Modifies `video_fb.c` to track (x, y, width, height) dirty rectangles
+    - Updates `doublebuf_*_update_screen()` to use the new region tracking
+    - Updates the `dirty` function signature to accept `x` and `width`
+
+    This patch is required to be applied first before other patches
+    in the Frambuffer Rotation patch series.
+
+Signed-off-by: Kyle Bader <kyle.bader94@gmail.com>
+---
+ grub-core/video/fb/video_fb.c | 199 +++++++++++++++++++++-------------
+ 1 file changed, 122 insertions(+), 77 deletions(-)
+
+diff --git a/grub-core/video/fb/video_fb.c b/grub-core/video/fb/video_fb.c
+index fa4ebde26..d17c47b11 100644
 --- a/grub-core/video/fb/video_fb.c
 +++ b/grub-core/video/fb/video_fb.c
 @@ -31,13 +31,6 @@ GRUB_MOD_LICENSE ("GPLv3+");
@@ -284,3 +312,6 @@
  
    mode_info->mode_type &= ~GRUB_VIDEO_MODE_TYPE_DOUBLE_BUFFERED;
  
+-- 
+2.43.0
+

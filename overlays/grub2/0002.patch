@@ -1,3 +1,40 @@
+From ba7e9aed7070594966ebdfed75eed2a933e23ce8 Mon Sep 17 00:00:00 2001
+From: kbader94 <kyle.bader94@gmail.com>
+Date: Tue, 28 May 2024 19:38:58 -0600
+Subject: [PATCH 2/4] video_fb: Implement framebuffer rotation transforms
+
+    Adds rotation-aware rendering to framebuffer drawing operations.
+
+    - Introduces `rotation`, `original_width`, and `original_height`
+      to `grub_video_mode_info`
+    - Updates all framebuffer operations (`blit`, `fill`, `scroll`, `dirty`)
+      to apply rotation transforms
+
+    Key implementation points:
+
+    - `grub_video_fb_create_render_target_from_pointer()` assumes the
+      target is the framebuffer and sets the configured rotation
+    - `grub_video_fb_create_render_target()` is used for off-screen
+      render targets and always disables rotation
+    - Off-screen render targets explicitly set `rotation = NONE`
+
+    TODO:
+
+    - `grub_video_fb_dispatch_blit' Uses unoptimized default(slow) blitter when rotation
+    env_var is provided. Optimized blitters currently do not support transformed coordinates.
+
+Signed-off-by: Kyle Bader <kyle.bader94@gmail.com>
+---
+ grub-core/video/fb/fbblit.c   |  72 +++++++++++++++++-
+ grub-core/video/fb/fbfill.c   |  28 ++++---
+ grub-core/video/fb/fbutil.c   |  68 +++++++++++++++++
+ grub-core/video/fb/video_fb.c | 136 +++++++++++++++++++++-------------
+ include/grub/fbutil.h         |   7 ++
+ include/grub/video.h          |  20 ++++-
+ 6 files changed, 266 insertions(+), 65 deletions(-)
+
+diff --git a/grub-core/video/fb/fbblit.c b/grub-core/video/fb/fbblit.c
+index 1010ef393..fe812383f 100644
 --- a/grub-core/video/fb/fbblit.c
 +++ b/grub-core/video/fb/fbblit.c
 @@ -62,7 +62,8 @@ grub_video_fbblit_replace (struct grub_video_fbblit_info *dst,
@@ -10,100 +47,101 @@
  	}
      }
  }
-@@ -1195,11 +1196,11 @@ grub_video_fbblit_blend (struct grub_video_fbblit_info *dst,
+@@ -1195,11 +1196,13 @@ grub_video_fbblit_blend (struct grub_video_fbblit_info *dst,
              {
                dst_color = grub_video_fb_map_rgba (src_red, src_green,
  						  src_blue, src_alpha);
 -              set_pixel (dst, x + i, y + j, dst_color);
-+              set_pixel (dst, x + trans_x(i, j, dst->mode_info), y + trans_y(i,j, dst->mode_info), dst_color);
++              set_pixel (dst, x + trans_x(i, j, dst->mode_info), 
++                         y + trans_y(i,j, dst->mode_info), dst_color);
                continue;
              }
  
 -          dst_color = get_pixel (dst, x + i, y + j);
-+          dst_color = get_pixel (dst, x + trans_x(i, j, dst->mode_info), y + trans_y(i,j, dst->mode_info));
++          dst_color = get_pixel (dst, x + trans_x(i, j, dst->mode_info), 
++                                 y + trans_y(i,j, dst->mode_info));
  
            grub_video_fb_unmap_color_int (dst, dst_color, &dst_red,
  					 &dst_green, &dst_blue, &dst_alpha);
-@@ -1212,7 +1213,7 @@ grub_video_fbblit_blend (struct grub_video_fbblit_info *dst,
+@@ -1212,7 +1215,8 @@ grub_video_fbblit_blend (struct grub_video_fbblit_info *dst,
            dst_color = grub_video_fb_map_rgba (dst_red, dst_green, dst_blue,
  					      dst_alpha);
  
 -          set_pixel (dst, x + i, y + j, dst_color);
-+          set_pixel (dst, x + trans_x(i, j, dst->mode_info), y + trans_y(i,j, dst->mode_info), dst_color);
++          set_pixel (dst, x + trans_x(i, j, dst->mode_info), 
++                     y + trans_y(i,j, dst->mode_info), dst_color);
          }
      }
  }
-@@ -1936,6 +1937,68 @@ grub_video_fb_dispatch_blit (struct grub_video_fbblit_info *target,
+@@ -1936,6 +1940,66 @@ grub_video_fb_dispatch_blit (struct grub_video_fbblit_info *target,
  			     unsigned int width, unsigned int height,
  			     int offset_x, int offset_y)
  {
 +  if (target->mode_info->rotation == GRUB_VIDEO_ROTATE_90)
++  {
++    int nx = y;
++    int ny = target->mode_info->width - x - 1;
++    if (oper == GRUB_VIDEO_BLIT_REPLACE)
 +    {
-+      int nx = y;
-+      int ny = target->mode_info->width - x - 1;
-+      if (oper == GRUB_VIDEO_BLIT_REPLACE)
-+	{
-+	  /* No optimized replace operator found, use default (slow) blitter.  */
-+	  grub_video_fbblit_replace (target, source, nx, ny, width, height,
-+					offset_x, offset_y);
-+	  return;
-+	}
-+      else
-+	{
-+	  /* No optimized replace operator found, use default (slow) blitter.  */
-+	  grub_video_fbblit_blend (target, source, nx, ny, width, height,
-+				      offset_x, offset_y);
-+	  return;
-+	}
++      /* No optimized replace operator found, use default (slow) blitter.  */
++      grub_video_fbblit_replace(target, source, nx, ny, width, height,
++                                offset_x, offset_y);
++      return;
 +    }
++    else
++    {
++      /* No optimized replace operator found, use default (slow) blitter.  */
++      grub_video_fbblit_blend(target, source, nx, ny, width, height,
++                              offset_x, offset_y);
++      return;
++    }
++  }
 +
 +  if (target->mode_info->rotation == GRUB_VIDEO_ROTATE_180)
++  {
++    int nx = target->mode_info->width - x - 1;
++    int ny = target->mode_info->height - y - 1;
++    if (oper == GRUB_VIDEO_BLIT_REPLACE)
 +    {
-+      int nx = target->mode_info->width - x - 1;
-+      int ny = target->mode_info->height - y - 1;
-+      if (oper == GRUB_VIDEO_BLIT_REPLACE)
-+	{
-+	  /* No optimized replace operator found, use default (slow) blitter.  */
-+	  grub_video_fbblit_replace (target, source, nx, ny, width, height,
-+					 offset_x, offset_y);
-+	  return;
-+	}
-+      else
-+	{
-+	  /* No optimized replace operator found, use default (slow) blitter.  */
-+	  grub_video_fbblit_blend (target, source, nx, ny, width, height,
-+				       offset_x, offset_y);
-+	  return;
-+	}
-+
-+      
++      /* No optimized replace operator found, use default (slow) blitter.  */
++      grub_video_fbblit_replace(target, source, nx, ny, width, height,
++                                offset_x, offset_y);
++      return;
 +    }
++    else
++    {
++      /* No optimized replace operator found, use default (slow) blitter.  */
++      grub_video_fbblit_blend(target, source, nx, ny, width, height,
++                              offset_x, offset_y);
++      return;
++    }
++  }
 +
 +  if (target->mode_info->rotation == GRUB_VIDEO_ROTATE_270)
++  {
++    int nx = target->mode_info->height - y - 1;
++    int ny = x;
++    if (oper == GRUB_VIDEO_BLIT_REPLACE)
 +    {
-+      int nx = target->mode_info->height - y - 1;
-+      int ny = x;
-+      if (oper == GRUB_VIDEO_BLIT_REPLACE)
-+	{
-+	  /* No optimized replace operator found, use default (slow) blitter.  */
-+	  grub_video_fbblit_replace (target, source, nx, ny, width, height,
-+					 offset_x, offset_y);
-+	  return;
-+	}
-+      else
-+	{
-+	  /* No optimized replace operator found, use default (slow) blitter.  */
-+	  grub_video_fbblit_blend (target, source, nx, ny, width, height,
-+				       offset_x, offset_y);
-+	  return;
-+	}
++      /* No optimized replace operator found, use default (slow) blitter.  */
++      grub_video_fbblit_replace(target, source, nx, ny, width, height,
++                                offset_x, offset_y);
++      return;
 +    }
++    else
++    {
++      /* No optimized replace operator found, use default (slow) blitter.  */
++      grub_video_fbblit_blend(target, source, nx, ny, width, height,
++                              offset_x, offset_y);
++      return;
++    }
++  }
 +
    if (oper == GRUB_VIDEO_BLIT_REPLACE)
      {
        /* Try to figure out more optimized version for replace operator.  */
 diff --git a/grub-core/video/fb/fbfill.c b/grub-core/video/fb/fbfill.c
-index 49fa16b92..cab4d8acc 100644
+index 49fa16b92..4a67e2379 100644
 --- a/grub-core/video/fb/fbfill.c
 +++ b/grub-core/video/fb/fbfill.c
 @@ -185,28 +185,38 @@ grub_video_fb_fill_dispatch (struct grub_video_fbblit_info *target,
@@ -116,7 +154,7 @@ index 49fa16b92..cab4d8acc 100644
 +    .width = width,
 +    .height = height
 +  };
-+  grub_video_rect_t tran = grub_video_transform_rectangle (orig, target->mode_info);
++  grub_video_rect_t fill_rect = grub_video_transform_rectangle (orig, target->mode_info);
 +  
    /* Try to figure out more optimized version.  Note that color is already
       mapped to target format so we can make assumptions based on that.  */
@@ -125,95 +163,101 @@ index 49fa16b92..cab4d8acc 100644
      case 4:
 -      grub_video_fbfill_direct32 (target, color, x, y,
 -				  width, height);
-+      grub_video_fbfill_direct32 (target, color, tran.x, tran.y,
-+				  tran.width, tran.height);
++      grub_video_fbfill_direct32 (target, color, fill_rect.x, fill_rect.y,
++				                          fill_rect.width, fill_rect.height);
        return;
      case 3:
 -      grub_video_fbfill_direct24 (target, color, x, y,
 -				  width, height);
-+      grub_video_fbfill_direct24 (target, color, tran.x, tran.y,
-+				  tran.width, tran.height);
++      grub_video_fbfill_direct24 (target, color, fill_rect.x, fill_rect.y,
++				                          fill_rect.width, fill_rect.height);
 +      return;
        return;
      case 2:
 -      grub_video_fbfill_direct16 (target, color, x, y,
 -                                        width, height);
-+      grub_video_fbfill_direct16 (target, color, tran.x, tran.y,
-+				  tran.width, tran.height);
++      grub_video_fbfill_direct16 (target, color, fill_rect.x, fill_rect.y,
++				                          fill_rect.width, fill_rect.height);
        return;
      case 1:
 -      grub_video_fbfill_direct8 (target, color, x, y,
 -				       width, height);
-+      grub_video_fbfill_direct8 (target, color, tran.x, tran.y,
-+				  tran.width, tran.height);
++      grub_video_fbfill_direct8 (target, color, fill_rect.x, fill_rect.y,
++				                         fill_rect.width, fill_rect.height);
        return;
      }
  
    /* No optimized version found, use default (slow) filler.  */
 -  grub_video_fbfill (target, color, x, y, width, height);
-+  grub_video_fbfill  (target, color, tran.x, tran.y,
-+				  tran.width, tran.height);
++  grub_video_fbfill  (target, color, fill_rect.x, fill_rect.y,
++				  fill_rect.width, fill_rect.height);
  }
 diff --git a/grub-core/video/fb/fbutil.c b/grub-core/video/fb/fbutil.c
-index 25ef39f47..368356fd7 100644
+index 25ef39f47..c12fa6e96 100644
 --- a/grub-core/video/fb/fbutil.c
 +++ b/grub-core/video/fb/fbutil.c
-@@ -149,3 +149,64 @@ set_pixel (struct grub_video_fbblit_info *source,
+@@ -149,3 +149,71 @@ set_pixel (struct grub_video_fbblit_info *source,
        break;
      }
  }
 +
-+int 
-+trans_x(int x,int y, struct grub_video_mode_info *mode_info)
++int trans_x (int x, int y, struct grub_video_mode_info *mode_info)
 +{
-+    switch (mode_info->rotation) {
-+        case GRUB_VIDEO_ROTATE_90:
-+            return y;
-+        case GRUB_VIDEO_ROTATE_180:
-+            return -x;
-+        case GRUB_VIDEO_ROTATE_270:
-+            return -y;
-+        case GRUB_VIDEO_ROTATE_NONE:
-+        default:
-+            return x;
-+    }
++  switch (mode_info->rotation)
++  {
++  case GRUB_VIDEO_ROTATE_90:
++    return y;
++  case GRUB_VIDEO_ROTATE_180:
++    return -x;
++  case GRUB_VIDEO_ROTATE_270:
++    return -y;
++  case GRUB_VIDEO_ROTATE_NONE:
++  default:
++    return x;
++  }
 +}
 +
-+int 
-+trans_y(int x, int y, struct grub_video_mode_info *mode_info)
++int trans_y(int x, int y, struct grub_video_mode_info *mode_info)
 +{
-+    switch (mode_info->rotation) {
-+        case GRUB_VIDEO_ROTATE_90:
-+            return -x;
-+        case GRUB_VIDEO_ROTATE_180:
-+            return -y;
-+        case GRUB_VIDEO_ROTATE_270:
-+            return x;
-+        case GRUB_VIDEO_ROTATE_NONE:
-+        default:
-+            return y;
-+    }
++  switch (mode_info->rotation)
++  {
++  case GRUB_VIDEO_ROTATE_90:
++    return -x;
++  case GRUB_VIDEO_ROTATE_180:
++    return -y;
++  case GRUB_VIDEO_ROTATE_270:
++    return x;
++  case GRUB_VIDEO_ROTATE_NONE:
++  default:
++    return y;
++  }
 +}
 +
-+grub_video_rect_t grub_video_transform_rectangle (grub_video_rect_t r, const struct grub_video_mode_info *mode_info)
++grub_video_rect_t
++grub_video_transform_rectangle (grub_video_rect_t r,
++                                const struct grub_video_mode_info *mode_info)
 +{
 +  grub_video_rect_t n;
++
 +  switch (mode_info->rotation)
 +    {
 +    case GRUB_VIDEO_ROTATE_NONE:
 +      return r;
++
 +    case GRUB_VIDEO_ROTATE_90:
 +      n.width = r.height;
 +      n.height = r.width;
 +      n.x = r.y;
 +      n.y = mode_info->width - r.x - r.width;
 +      return n;
++
 +    case GRUB_VIDEO_ROTATE_180:
 +      n.width = r.width;
 +      n.height = r.height;
 +      n.x = mode_info->width - r.x - r.width;
 +      n.y = mode_info->height - r.y - r.height;
 +      return n;
++
 +    case GRUB_VIDEO_ROTATE_270:
 +      n.width = r.height;
 +      n.height = r.width;
@@ -221,11 +265,11 @@ index 25ef39f47..368356fd7 100644
 +      n.y = r.x;
 +      return n;
 +    }
++
 +  return r;
 +}
-\ No newline at end of file
 diff --git a/grub-core/video/fb/video_fb.c b/grub-core/video/fb/video_fb.c
-index d17c47b11..377a9179d 100644
+index d17c47b11..907c2cfb6 100644
 --- a/grub-core/video/fb/video_fb.c
 +++ b/grub-core/video/fb/video_fb.c
 @@ -26,6 +26,7 @@
@@ -236,27 +280,57 @@ index d17c47b11..377a9179d 100644
  
  GRUB_MOD_LICENSE ("GPLv3+");
  
-@@ -826,15 +827,17 @@ grub_video_fb_unmap_color_int (struct grub_video_fbblit_info * source,
+@@ -826,9 +827,9 @@ grub_video_fb_unmap_color_int (struct grub_video_fbblit_info * source,
  static void
  dirty (int x, int y, int width, int height)
  {
 -  
-+
    grub_video_rect_t *current_dirty = &framebuffer.current_dirty;
 -  grub_video_rect_t dirty_rect = {
-+  grub_video_rect_t additive_rect = {
++  grub_video_rect_t dirty_rect;
++  grub_video_rect_t origin_rect = {
      .x = x,
      .y = y,
      .width = width,
-     .height = height
-   };
- 
-+  grub_video_rect_t dirty_rect = grub_video_transform_rectangle (additive_rect, &framebuffer.render_target->mode_info);
-+
+@@ -838,22 +839,21 @@ dirty (int x, int y, int width, int height)
    if (framebuffer.render_target != framebuffer.back_target)
      return;
  
-@@ -1063,6 +1066,8 @@ grub_video_fb_scroll (grub_video_color_t color, int dx, int dy)
+-  /* extend dirty_rect bounds if dirty x min is less than current x */
+-  if (dirty_rect.x < current_dirty->x) 
+-    current_dirty->x = dirty_rect.x;
+-
+-  /* extend dirty_rect bounds if dirty x max is greater than current width */
+-  if (dirty_rect.x + dirty_rect.width > current_dirty->x + current_dirty->width)
+-    current_dirty->width = (dirty_rect.x + dirty_rect.width) - current_dirty->x;
+-
+-  /* extend dirty_rect bounds if dirty y min is less than current y */
+-  if (dirty_rect.y < current_dirty->y)
+-    current_dirty->y = dirty_rect.y;
+-
+-  /* extend dirty_rect bounds if dirty y max is greater than current height */
+-  if (dirty_rect.y + dirty_rect.height > current_dirty->y + current_dirty->height)
+-    current_dirty->height = (dirty_rect.y + dirty_rect.height) - current_dirty->y;
+-
++  dirty_rect = grub_video_transform_rectangle(origin_rect,
++                &framebuffer.render_target->mode_info);
++
++  /* Expand current_dirty to include dirty_rect */
++  int x1 = grub_min(current_dirty->x, dirty_rect.x);
++  int y1 = grub_min(current_dirty->y, dirty_rect.y);
++  int x2 = grub_max(current_dirty->x + current_dirty->width,
++                    dirty_rect.x + dirty_rect.width);
++  int y2 = grub_max(current_dirty->y + current_dirty->height,
++                    dirty_rect.y + dirty_rect.height);
++
++  current_dirty->x = x1;
++  current_dirty->y = y1;
++  current_dirty->width = x2 - x1;
++  current_dirty->height = y2 - y1;
+ }
+ 
+ grub_err_t
+@@ -1063,6 +1063,8 @@ grub_video_fb_scroll (grub_video_color_t color, int dx, int dy)
  {
    int width;
    int height;
@@ -265,7 +339,7 @@ index d17c47b11..377a9179d 100644
    int src_x;
    int src_y;
    int dst_x;
-@@ -1072,39 +1077,41 @@ grub_video_fb_scroll (grub_video_color_t color, int dx, int dy)
+@@ -1072,39 +1074,41 @@ grub_video_fb_scroll (grub_video_color_t color, int dx, int dy)
    if ((dx == 0) && (dy == 0))
      return GRUB_ERR_NONE;
  
@@ -318,7 +392,7 @@ index d17c47b11..377a9179d 100644
      {
        /* 3. Move data in render target.  */
        struct grub_video_fbblit_info target;
-@@ -1119,7 +1126,7 @@ grub_video_fb_scroll (grub_video_color_t color, int dx, int dy)
+@@ -1119,7 +1123,7 @@ grub_video_fb_scroll (grub_video_color_t color, int dx, int dy)
        linelen = width * target.mode_info->bytes_per_pixel;
  #define DO_SCROLL                                                    \
        /* Check vertical direction of the move.  */                   \
@@ -327,7 +401,7 @@ index d17c47b11..377a9179d 100644
  	{                                                            \
  	  dst = (void *) grub_video_fb_get_video_ptr (&target,       \
  						      dst_x, dst_y); \
-@@ -1245,6 +1252,9 @@ grub_video_fb_create_render_target (struct grub_video_fbrender_target **result,
+@@ -1245,6 +1249,9 @@ grub_video_fb_create_render_target (struct grub_video_fbrender_target **result,
    /* TODO: Implement other types too.
       Currently only 32bit render targets are supported.  */
  
@@ -337,7 +411,7 @@ index d17c47b11..377a9179d 100644
    /* Mark render target as allocated.  */
    target->is_allocated = 1;
  
-@@ -1270,6 +1280,8 @@ grub_video_fb_create_render_target (struct grub_video_fbrender_target **result,
+@@ -1270,6 +1277,8 @@ grub_video_fb_create_render_target (struct grub_video_fbrender_target **result,
    /* Setup render target format.  */
    target->mode_info.width = width;
    target->mode_info.height = height;
@@ -346,7 +420,7 @@ index d17c47b11..377a9179d 100644
    switch (mode_type)
      {
      case GRUB_VIDEO_MODE_TYPE_INDEX_COLOR
-@@ -1332,6 +1344,7 @@ grub_video_fb_create_render_target_from_pointer (struct grub_video_fbrender_targ
+@@ -1332,6 +1341,7 @@ grub_video_fb_create_render_target_from_pointer (struct grub_video_fbrender_targ
  {
    struct grub_video_fbrender_target *target;
    unsigned y;
@@ -354,14 +428,14 @@ index d17c47b11..377a9179d 100644
  
  #ifndef GRUB_HAVE_UNALIGNED_ACCESS
    if (!(mode_info->bytes_per_pixel & (mode_info->bytes_per_pixel - 1))
-@@ -1352,30 +1365,53 @@ grub_video_fb_create_render_target_from_pointer (struct grub_video_fbrender_targ
+@@ -1352,30 +1362,53 @@ grub_video_fb_create_render_target_from_pointer (struct grub_video_fbrender_targ
    target->data = ptr;
  
    grub_memcpy (&(target->mode_info), mode_info, sizeof (target->mode_info));
 +  rot_env = grub_env_get("rotation");
 +
 +  if (!rot_env) {
-+        target->mode_info.rotation = GRUB_VIDEO_ROTATE_270; // GRUB_VIDEO_ROTATE_NONE;
++        target->mode_info.rotation = GRUB_VIDEO_ROTATE_NONE;
 +    } else if (grub_strcmp(rot_env, "90") == 0) {
 +        target->mode_info.rotation = GRUB_VIDEO_ROTATE_90;
 +    } else if (grub_strcmp(rot_env, "180") == 0) {
@@ -416,7 +490,7 @@ index d17c47b11..377a9179d 100644
  
    /* Save result to caller.  */
    *result = target;
-@@ -1455,9 +1491,9 @@ doublebuf_blit_update_screen (void)
+@@ -1455,9 +1488,9 @@ doublebuf_blit_update_screen (void)
    }
  
    /* reset current_dirty rect */
@@ -428,7 +502,7 @@ index d17c47b11..377a9179d 100644
    framebuffer.current_dirty.width = 0;
  
    return GRUB_ERR_NONE;
-@@ -1491,9 +1527,9 @@ grub_video_fb_doublebuf_blit_init (struct grub_video_fbrender_target **back,
+@@ -1491,9 +1524,9 @@ grub_video_fb_doublebuf_blit_init (struct grub_video_fbrender_target **back,
    framebuffer.pages[0] = framebuf;
    framebuffer.displayed_page = 0;
    framebuffer.render_page = 0;
@@ -440,7 +514,7 @@ index d17c47b11..377a9179d 100644
    framebuffer.current_dirty.width = 0;
  
    return GRUB_ERR_NONE;
-@@ -1546,9 +1582,9 @@ doublebuf_pageflipping_update_screen (void)
+@@ -1546,9 +1579,9 @@ doublebuf_pageflipping_update_screen (void)
  
    /* reset current_dirty rect */
    framebuffer.previous_dirty = framebuffer.current_dirty;
@@ -452,7 +526,7 @@ index d17c47b11..377a9179d 100644
    framebuffer.current_dirty.width = 0;
  
    /* Swap the page numbers in the framebuffer struct.  */
-@@ -1609,15 +1645,15 @@ doublebuf_pageflipping_init (struct grub_video_mode_info *mode_info,
+@@ -1609,15 +1642,15 @@ doublebuf_pageflipping_init (struct grub_video_mode_info *mode_info,
    framebuffer.pages[1] = page1_ptr;
  
    /* reset current_dirty rect */
@@ -472,7 +546,7 @@ index d17c47b11..377a9179d 100644
    framebuffer.previous_dirty.width = 0;
  
    /* Set the framebuffer memory data pointer and display the right page.  */
-@@ -1705,9 +1741,9 @@ grub_video_fb_setup (unsigned int mode_type, unsigned int mode_mask,
+@@ -1705,9 +1738,9 @@ grub_video_fb_setup (unsigned int mode_type, unsigned int mode_mask,
    framebuffer.render_page = 0;
    framebuffer.set_page = 0;
   /* reset transformed_add_rect */
@@ -484,7 +558,7 @@ index d17c47b11..377a9179d 100644
    framebuffer.current_dirty.width = 0;
  
    mode_info->mode_type &= ~GRUB_VIDEO_MODE_TYPE_DOUBLE_BUFFERED;
-@@ -1739,6 +1775,9 @@ grub_video_fb_get_info_and_fini (struct grub_video_mode_info *mode_info,
+@@ -1739,6 +1772,9 @@ grub_video_fb_get_info_and_fini (struct grub_video_mode_info *mode_info,
    grub_memcpy (mode_info, &(framebuffer.back_target->mode_info),
  	       sizeof (*mode_info));
  
@@ -495,18 +569,16 @@ index d17c47b11..377a9179d 100644
       kernel drivers expect that.  */
    if (framebuffer.set_page && framebuffer.displayed_page != 0)
 diff --git a/include/grub/fbutil.h b/include/grub/fbutil.h
-index 78a1ab3b4..ad625bff9 100644
+index 78a1ab3b4..19850b6e4 100644
 --- a/include/grub/fbutil.h
 +++ b/include/grub/fbutil.h
-@@ -61,4 +61,13 @@ grub_video_color_t get_pixel (struct grub_video_fbblit_info *source,
+@@ -61,4 +61,11 @@ grub_video_color_t get_pixel (struct grub_video_fbblit_info *source,
  void set_pixel (struct grub_video_fbblit_info *source,
                  unsigned int x, unsigned int y, grub_video_color_t color);
  
-+int 
-+trans_x(int x,int y, struct grub_video_mode_info *mode_info);
++int trans_x(int x,int y, struct grub_video_mode_info *mode_info);
 +
-+int 
-+trans_y(int x, int y, struct grub_video_mode_info *mode_info);
++int trans_y(int x, int y, struct grub_video_mode_info *mode_info);
 +
 +grub_video_rect_t grub_video_transform_rectangle (grub_video_rect_t r, 
 +                                                  const struct grub_video_mode_info *mode_info);
@@ -554,3 +626,6 @@ index 9dac0f379..f05e70b26 100644
    /* Mode type bitmask.  Contains information like is it Index color or
       RGB mode.  */
    grub_video_mode_type_t mode_type;
+-- 
+2.43.0
+
