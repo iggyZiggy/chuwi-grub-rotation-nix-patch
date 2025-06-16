@@ -54,6 +54,19 @@ boot priority, even though i had this set:
 the extraConfig was supposed to make it work without modifying that patch above but
 it did not work, if anyone knows why, please let me know and i'll update this code.
 
+## Update
+Kyle made a PR with a fix 
+```
+Rotation can now be set by appending the rotation in a '-<rotation>' 
+    formatted string. For example: 
+    
+       boot.loader.grub.gfxmodeEfi="auto-90";
+           OR
+       boot.loader.grub.gfxmodeEfi="1200x1920x32-270";
+    
+    Suported rotation values are: 90 | 180 | 270
+```
+
 all credits for the patch go to:
 https://lists.gnu.org/archive/html/grub-devel/2024-06/msg00165.html
 https://lore.kernel.org/all/20240618041445.12362-1-kyle.bader94@gmail.com/T/#m88e645967fa147d51468fb921eb03546eed4c6a1
